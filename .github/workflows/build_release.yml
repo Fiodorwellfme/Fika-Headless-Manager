@@ -55,7 +55,7 @@ jobs:
       - name: Zip Windows build
         run: |
           cd output/windows
-          zip -r "../../${{ inputs.release_name }}.zip" .
+          zip -r "../../Fika Headless Manager ${{ inputs.release_version }}.zip" .
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
