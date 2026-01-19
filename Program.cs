@@ -33,11 +33,13 @@ public static class Program
 
             var graphicsArgs = WithGraphics ? string.Empty : " -nographics -batchmode";
             var logArg = !Settings.ExtraLogging ? string.Empty : " -logfile Headless.log";
+            var titleArg = !string.IsNullOrEmpty(Settings.Title) ? $" -title=\"{Settings.Title}\"" : string.Empty;
 
             return $"-token={Settings.ProfileId} " +
                    $"-config={{'BackendUrl':'{Settings.BackendUrl.OriginalString}','Version':'live'}}" +
                    graphicsArgs +
                    logArg +
+                   titleArg +
                    " --enable-console true";
         }
     }
@@ -104,7 +106,12 @@ public static class Program
 
     private static async Task<bool> StartGame()
     {
-        Log($"Starting headless client {(WithGraphics ? "with" : "without")} graphics and {(Settings!.ExtraLogging ? "extra logging" : "no extra logging")}.");
+        var logMessage = $"Starting headless client {(WithGraphics ? "with" : "without")} graphics and {(Settings!.ExtraLogging ? "extra logging" : "no extra logging")}.";
+        if (!string.IsNullOrEmpty(Settings.Title))
+        {
+            logMessage += $" Using custom title: '{Settings.Title}'";
+        }
+        Log(logMessage);
 
         var logFile = Path.Combine(Environment.CurrentDirectory, @"BepInEx\LogOutput.log");
 
