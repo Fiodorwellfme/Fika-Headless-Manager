@@ -3,11 +3,8 @@ name: Build And Publish
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Release Tag (e.g., v1.0.0)'
-        required: true
-      release_name:
-        description: 'Release Title (e.g., Fika Headless Manager 1.0.0)'
+      release_version:
+        description: 'Release version (e.g., 1.0.0)'
         required: true
       build_type:
         type: choice
@@ -16,9 +13,6 @@ on:
         options: 
         - Release
         - Debug
-      release_notes:
-        description: 'Release Notes (optional)'
-        required: false
 
 jobs:
   build-windows:
@@ -49,7 +43,11 @@ jobs:
             -p:SelfContained=false \
             -p:DebugType=None \
             -p:DebugSymbols=false \
-            -p:PublishTrimmed=false
+            -p:PublishTrimmed=false \
+            -p:Version=${{ inputs.release_version }} \
+            -p:AssemblyVersion=${{ inputs.release_version }} \
+            -p:FileVersion=${{ inputs.release_version }} \
+            -p:InformationalVersion=${{ inputs.release_version }}
 
       - name: Copy license
         run: cp LICENSE.md output/windows/FikaHeadlessManager-LICENSE.md
@@ -62,8 +60,8 @@ jobs:
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.release_name }}
-          path: ${{ inputs.release_name }}.zip
+          name: Fika Headless Manager ${{ inputs.release_version }}
+          path: Fika Headless Manager ${{ inputs.release_version }}.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -96,7 +94,11 @@ jobs:
             -p:SelfContained=false \
             -p:DebugType=None \
             -p:DebugSymbols=false \
-            -p:PublishTrimmed=false
+            -p:PublishTrimmed=false \
+            -p:Version=${{ inputs.release_version }} \
+            -p:AssemblyVersion=${{ inputs.release_version }} \
+            -p:FileVersion=${{ inputs.release_version }} \
+            -p:InformationalVersion=${{ inputs.release_version }}
 
       - name: Copy license
         run: cp LICENSE.md output/${{ matrix.runtime }}/FikaHeadlessManager-LICENSE.md
@@ -104,13 +106,13 @@ jobs:
       - name: Tar Linux build
         run: |
           cd output/${{ matrix.runtime }}
-          tar -czf "../../${{ inputs.release_name }}-${{ matrix.runtime }}.tar.gz" *
+          tar -czf "../../Fika Headless Manager ${{ inputs.release_version }}-${{ matrix.runtime }}.tar.gz" *
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.release_name }}-${{ matrix.runtime }}
-          path: ${{ inputs.release_name }}-${{ matrix.runtime }}.tar.gz
+          name: Fika Headless Manager ${{ inputs.release_version }}-${{ matrix.runtime }}
+          path: Fika Headless Manager ${{ inputs.release_version }}-${{ matrix.runtime }}.tar.gz
 
   release:
     needs: [build-windows, build-linux]
@@ -125,11 +127,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          name: ${{ inputs.release_name }}
-          body: ${{ inputs.release_notes }}
+          name: Fika Headless Manager ${{ inputs.release_version }}
           draft: true
           files: |
             releases/**/*.zip
             releases/**/*.tar.gz
         env:
-          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
