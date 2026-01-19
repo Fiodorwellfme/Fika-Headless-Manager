@@ -87,6 +87,11 @@ public static class Program
             Environment.Exit(1);
         }
 
+        if (!string.IsNullOrEmpty(Settings.Title))
+        {
+            Console.Title = $"Headless Manager - {Settings.Title}";
+        }
+
         _ = Task.Run(GameLoop);
         await Task.Delay(-1); // keep process alive
     }
