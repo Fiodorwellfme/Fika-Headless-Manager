@@ -1,8 +1,10 @@
 ﻿using FikaHeadlessManager.Models;
 using System.Diagnostics;
+using System.Drawing;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Windows.Forms;
 
 namespace FikaHeadlessManager;
 
@@ -45,9 +47,15 @@ public static class Program
     }
     private static bool WithGraphics { get; set; }
     private static Process? TarkovProcess { get; set; }
+    private static IntPtr TarkovWindow { get; set; }
+    private static TrayToggle? ActiveTrayToggle { get; set; }
+    private static bool IsManagerHidden { get; set; }
+    private static int CleanupStarted;
 
     private static async Task Main()
     {
+        OwnedConsole.Start();
+        ConsoleCloseHandler.Start(Cleanup);
         AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
 
         if (!File.Exists("EscapeFromTarkov.exe"))
@@ -92,21 +100,42 @@ public static class Program
             Console.Title = $"Headless Manager - {Settings.Title}";
         }
 
+        var trayTitle = !string.IsNullOrEmpty(Settings.Title) ? Settings.Title : "Fika Headless Manager";
+        ActiveTrayToggle = TrayToggle.Start(trayTitle, Settings.StartMinimizedToTray, SetManagerHidden);
+
         _ = Task.Run(GameLoop);
         await Task.Delay(-1); // keep process alive
     }
 
     private static void CurrentDomain_ProcessExit(object? sender, EventArgs e)
     {
-        if (TarkovProcess == null)
+        Cleanup();
+    }
+
+    private static void Cleanup()
+    {
+        if (Interlocked.Exchange(ref CleanupStarted, 1) == 1)
         {
             return;
         }
 
-        if (!TarkovProcess.HasExited)
+        var tarkovProcess = TarkovProcess;
+
+        try
         {
-            TarkovProcess.Kill(true);
+            if (tarkovProcess != null && !tarkovProcess.HasExited)
+            {
+                tarkovProcess.Kill(true);
+                tarkovProcess.WaitForExit(5000);
+            }
         }
+        catch
+        {
+            // Process may have already exited while the manager is closing.
+        }
+
+        ActiveTrayToggle?.Dispose();
+        OwnedConsole.Stop();
     }
 
     private static async Task<bool> StartGame()
@@ -141,7 +170,71 @@ public static class Program
         };
 
         TarkovProcess = Process.Start(startInfo);
+        if (TarkovProcess != null && IsManagerHidden)
+        {
+            _ = HideProcessWindowWhenReady(TarkovProcess);
+        }
+
         return TarkovProcess != null;
+    }
+
+    private static void SetManagerHidden(bool hidden)
+    {
+        IsManagerHidden = hidden;
+
+        if (TarkovProcess == null || TarkovProcess.HasExited)
+        {
+            return;
+        }
+
+        _ = SetProcessWindowHidden(TarkovProcess, hidden);
+    }
+
+    private static bool SetProcessWindowHidden(Process process, bool hidden)
+    {
+        var window = hidden ? GetProcessWindow(process) : TarkovWindow;
+        if (window == IntPtr.Zero)
+        {
+            window = GetProcessWindow(process);
+        }
+
+        if (window == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        ShowWindow(window, hidden ? SW_HIDE : SW_RESTORE);
+        if (!hidden)
+        {
+            SetForegroundWindow(window);
+        }
+
+        return true;
+    }
+
+    private static IntPtr GetProcessWindow(Process process)
+    {
+        process.Refresh();
+        var window = process.MainWindowHandle;
+        if (window != IntPtr.Zero)
+        {
+            TarkovWindow = window;
+        }
+
+        return TarkovWindow;
+    }
+
+    private static async Task HideProcessWindowWhenReady(Process process)
+    {
+        for (var i = 0; i < 20 && IsManagerHidden && !process.HasExited; i++)
+        {
+            if (SetProcessWindowHidden(process, true))
+            {
+                return;
+            }
+
+            await Task.Delay(250);
+        }
     }
 
     private static async Task GameLoop()
@@ -168,6 +261,7 @@ public static class Program
 
             await TarkovProcess!.WaitForExitAsync();
             TarkovProcess = null;
+            TarkovWindow = IntPtr.Zero;
 
             Log("Game exited, restarting...");
         }
@@ -239,6 +333,261 @@ public static class Program
             InsecureHandler.Dispose();
         }
     }
+
+    private const int SW_HIDE = 0;
+    private const int SW_RESTORE = 9;
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+
+internal static class OwnedConsole
+{
+    internal static void Start()
+    {
+        if (!AllocConsole())
+        {
+            return;
+        }
+
+        Console.SetIn(new StreamReader(Console.OpenStandardInput()));
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
+    }
+
+    internal static void Stop()
+    {
+        FreeConsole();
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern bool AllocConsole();
+
+    [DllImport("kernel32.dll")]
+    private static extern bool FreeConsole();
+}
+
+internal static class ConsoleCloseHandler
+{
+    private static HandlerRoutine? Handler;
+    private static Action? Cleanup;
+
+    internal static void Start(Action cleanup)
+    {
+        Cleanup = cleanup;
+        Handler = HandleConsoleClose;
+        SetConsoleCtrlHandler(Handler, true);
+    }
+
+    private static bool HandleConsoleClose(CtrlType ctrlType)
+    {
+        switch (ctrlType)
+        {
+            case CtrlType.CtrlC:
+            case CtrlType.CtrlBreak:
+            case CtrlType.CtrlClose:
+            case CtrlType.CtrlShutdown:
+                Cleanup?.Invoke();
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private delegate bool HandlerRoutine(CtrlType ctrlType);
+
+    private enum CtrlType
+    {
+        CtrlC = 0,
+        CtrlBreak = 1,
+        CtrlClose = 2,
+        CtrlLogoff = 5,
+        CtrlShutdown = 6
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(HandlerRoutine handlerRoutine, bool add);
+}
+
+internal sealed class TrayToggle : ApplicationContext
+{
+    private const int GWL_EXSTYLE = -20;
+    private const uint GA_ROOT = 2;
+    private const int SW_HIDE = 0;
+    private const int SW_RESTORE = 9;
+    private const int SWP_NOMOVE = 0x0002;
+    private const int SWP_NOSIZE = 0x0001;
+    private const int SWP_NOZORDER = 0x0004;
+    private const int SWP_FRAMECHANGED = 0x0020;
+    private const long WS_EX_TOOLWINDOW = 0x00000080L;
+    private const long WS_EX_APPWINDOW = 0x00040000L;
+
+    private readonly IntPtr _window;
+    private readonly NotifyIcon _notifyIcon;
+    private readonly IntPtr _originalExtendedStyle;
+    private readonly Action<bool> _hiddenChanged;
+    private bool _isHidden;
+
+    private TrayToggle(IntPtr window, string title, bool startHidden, Action<bool> hiddenChanged)
+    {
+        _window = window;
+        _hiddenChanged = hiddenChanged;
+        _originalExtendedStyle = GetWindowLongPtr(_window, GWL_EXSTYLE);
+
+        _notifyIcon = new NotifyIcon
+        {
+            Icon = GetTrayIcon(),
+            Text = NormalizeTrayTitle(title),
+            Visible = true
+        };
+
+        _notifyIcon.Click += (_, _) => ToggleConsole();
+
+        if (startHidden)
+        {
+            HideConsole();
+        }
+    }
+
+    internal static TrayToggle? Start(string title, bool startHidden, Action<bool> hiddenChanged)
+    {
+        var window = GetConsoleWindow();
+        if (window == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        var rootWindow = GetAncestor(window, GA_ROOT);
+        if (rootWindow != IntPtr.Zero)
+        {
+            window = rootWindow;
+        }
+
+        using var ready = new ManualResetEventSlim();
+        TrayToggle? trayToggle = null;
+
+        var thread = new Thread(() =>
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            trayToggle = new TrayToggle(window, title, startHidden, hiddenChanged);
+            ready.Set();
+            Application.Run(trayToggle);
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        ready.Wait();
+
+        return trayToggle;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _notifyIcon.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private void ToggleConsole()
+    {
+        if (_isHidden)
+        {
+            RestoreConsole();
+            return;
+        }
+
+        HideConsole();
+    }
+
+    private void HideConsole()
+    {
+        var hiddenStyle = new IntPtr((_originalExtendedStyle.ToInt64() & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW);
+        SetWindowLongPtr(_window, GWL_EXSTYLE, hiddenStyle);
+        SetWindowPos(_window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        ShowWindow(_window, SW_HIDE);
+        _isHidden = true;
+        _hiddenChanged(true);
+    }
+
+    private void RestoreConsole()
+    {
+        SetWindowLongPtr(_window, GWL_EXSTYLE, _originalExtendedStyle);
+        SetWindowPos(_window, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        ShowWindow(_window, SW_RESTORE);
+        SetForegroundWindow(_window);
+        _isHidden = false;
+        _hiddenChanged(false);
+    }
+
+    private static Icon GetTrayIcon()
+    {
+        if (Environment.ProcessPath == null)
+        {
+            return SystemIcons.Application;
+        }
+
+        return Icon.ExtractAssociatedIcon(Environment.ProcessPath) ?? SystemIcons.Application;
+    }
+
+    private static string NormalizeTrayTitle(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return "Fika Headless Manager";
+        }
+
+        return title.Length <= 63 ? title : title[..63];
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
+    private static extern IntPtr GetWindowLongPtr32(IntPtr hWnd, int nIndex);
+
+    private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
+    {
+        return IntPtr.Size == 8
+            ? GetWindowLongPtr64(hWnd, nIndex)
+            : GetWindowLongPtr32(hWnd, nIndex);
+    }
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+    private static extern IntPtr SetWindowLongPtr32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+    {
+        return IntPtr.Size == 8
+            ? SetWindowLongPtr64(hWnd, nIndex, dwNewLong)
+            : SetWindowLongPtr32(hWnd, nIndex, dwNewLong);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, int flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 
 internal static class StartupNative
